@@ -64,16 +64,13 @@ def mock_employee_db():
     }
     return pd.DataFrame(data)
 
-# --- THE GEMINI AI AGENT (ROBUST VERSION) ---
+# --- THE GEMINI AI AGENT (DYNAMIC DISCOVERY VERSION) ---
 
 def get_gemini_recommendations(employees_df, total_budget, strategy):
     """
-    Sends the context and employee data to Gemini to generate recommendations.
-    Implements a fallback mechanism to try multiple models if one fails.
+    Dynamically finds an available Gemini model and generates recommendations.
     """
     context = load_data_context()
-    
-    # Convert dataframe to CSV string for the prompt
     employee_csv = employees_df.to_csv(index=False)
     
     prompt = f"""
@@ -111,40 +108,66 @@ def get_gemini_recommendations(employees_df, total_budget, strategy):
     ]
     """
     
-    # List of models to try in order of preference
-    # 1.5 Flash is fastest/cheapest. 1.5 Pro is smarter. 1.0 Pro is legacy stable.
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']
-    
-    last_error = None
+    try:
+        # 1. DYNAMICALLY FIND AVAILABLE MODELS
+        # We ask Google what models are available for this API key
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        if not available_models:
+            st.error("CRITICAL ERROR: No Generative AI models are available for this API Key. Please check your Google Cloud/AI Studio plan.")
+            return pd.DataFrame()
 
-    for model_name in models_to_try:
-        try:
-            # Try to initialize and call the model
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            
-            # Clean up response
-            text = response.text
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0]
-            
-            clean_text = text.strip()
-            data = json.loads(clean_text)
-            
-            # If successful, return data and stop trying
-            return pd.DataFrame(data)
-            
-        except Exception as e:
-            # If this model fails, log error internally and continue to next model
-            last_error = e
-            continue
+        # 2. SELECT THE BEST MODEL
+        # Preference: 1.5 Flash (Fast) -> 1.5 Pro (Smart) -> Any Gemini -> Any Available
+        selected_model_name = None
+        
+        # Search strategy
+        for m in available_models:
+            if 'gemini-1.5-flash' in m:
+                selected_model_name = m
+                break
+        
+        if not selected_model_name:
+            for m in available_models:
+                if 'gemini-1.5-pro' in m:
+                    selected_model_name = m
+                    break
+        
+        if not selected_model_name:
+            for m in available_models:
+                if 'gemini' in m:
+                    selected_model_name = m
+                    break
+                    
+        # Fallback to the first one found if nothing matched preferences
+        if not selected_model_name:
+            selected_model_name = available_models[0]
 
-    # If loop finishes and nothing worked:
-    st.error(f"AI Error: Could not connect to any Gemini models. Last error: {last_error}")
-    return pd.DataFrame()
-    
+        # 3. RUN GENERATION
+        # st.toast(f"Using AI Model: {selected_model_name}") # Uncomment for debugging
+        model = genai.GenerativeModel(selected_model_name)
+        response = model.generate_content(prompt)
+        
+        # 4. CLEAN OUTPUT
+        text = response.text
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+            
+        clean_text = text.strip()
+        data = json.loads(clean_text)
+        return pd.DataFrame(data)
+        
+    except Exception as e:
+        st.error(f"AI Processing Error: {e}")
+        # Print available models to helps debug if it fails again
+        # st.write("Debug - Available Models found:", available_models) 
+        return pd.DataFrame()
+
 # --- UI LAYOUT ---
 
 def main():
@@ -232,4 +255,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
