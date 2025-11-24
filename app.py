@@ -68,7 +68,7 @@ def mock_employee_db():
 
 def get_gemini_recommendations(employees_df, total_budget, strategy):
     """
-    Sends the context and employee data to Gemini Pro to generate recommendations.
+    Sends the context and employee data to Gemini to generate recommendations.
     """
     context = load_data_context()
     
@@ -76,57 +76,62 @@ def get_gemini_recommendations(employees_df, total_budget, strategy):
     employee_csv = employees_df.to_csv(index=False)
     
     prompt = f"""
-    You are an expert HR AI Agent for 'Saverpe'. Your goal is to recommend employee rewards.
+    You are an expert HR AI Agent for 'Saverpe'.
     
-    ### CONTEXT & RULES:
-    1. **Budget Rules:** {context['rules']}
-    2. **Reward Catalog:** {context['catalog']}
-    3. **Psychological Framework:** {context['psychology']}
+    ### CONTEXT:
+    1. Rules: {context['rules']}
+    2. Catalog: {context['catalog']}
+    3. Psychology: {context['psychology']}
     
-    ### INPUT DATA:
-    - **Total Budget:** ₹{total_budget}
-    - **Strategy:** {strategy}
-    - **Employee List:**
+    ### INPUT:
+    - Budget: {total_budget}
+    - Strategy: {strategy}
+    - Employees:
     {employee_csv}
     
-    ### INSTRUCTIONS:
-    Analyze the employee list. For each employee, suggest a reward based on the 'Strategy' selected.
-    
-    If Strategy is 'High Impact': Prioritize psychological impact (Experiences, Surprise) over cost.
-    If Strategy is 'Best Savings': Prioritize rewards with high 'Savings_Potential' (Brand Products).
-    If Strategy is 'Least Complex': Prioritize 'Basic' complexity rewards (Bank Transfer, Wallet).
-    
-    **Strictly follow the Budget_Range per Level defined in the Budget Rules.**
+    ### TASK:
+    Recommend rewards for each employee.
+    - 'High Impact': Prioritize Experiences/Surprise.
+    - 'Best Savings': Prioritize Brand Products (high savings).
+    - 'Least Complex': Prioritize Bank Transfer.
     
     ### OUTPUT FORMAT:
-    Return ONLY a raw JSON array. Do not include markdown formatting like ```json.
-    Structure:
+    Return ONLY a valid JSON array. No markdown, no explanation text.
     [
         {{
             "Employee": "Name",
             "Level": "Lx",
             "Department": "Dept",
             "Recommended_Reward": "Reward Name",
-            "Timing": "When to give (e.g. Immediate, Quarterly)",
+            "Timing": "Timing",
             "Amount_INR": 0,
-            "Reasoning": "Brief psychological or financial justification"
+            "Reasoning": "Short reason"
         }}
     ]
     """
     
     try:
-        # Call Gemini API
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # FIX: Switched to 'gemini-pro' for stability
+        model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
         
-        # Clean up response (remove markdown if Gemini adds it)
-        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        # Clean up response to ensure valid JSON
+        text = response.text
+        # Remove markdown code blocks if present
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+            
+        # Strip whitespace
+        clean_text = text.strip()
         
         data = json.loads(clean_text)
         return pd.DataFrame(data)
         
     except Exception as e:
         st.error(f"AI Agent Error: {e}")
+        # Return empty dataframe so app doesn't crash
         return pd.DataFrame()
 
 # --- UI LAYOUT ---
@@ -214,4 +219,5 @@ def main():
                 st.success("Orders processed successfully!")
 
 if __name__ == "__main__":
+
     main()
