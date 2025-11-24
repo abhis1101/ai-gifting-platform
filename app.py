@@ -64,11 +64,12 @@ def mock_employee_db():
     }
     return pd.DataFrame(data)
 
-# --- THE GEMINI AI AGENT ---
+# --- THE GEMINI AI AGENT (ROBUST VERSION) ---
 
 def get_gemini_recommendations(employees_df, total_budget, strategy):
     """
     Sends the context and employee data to Gemini to generate recommendations.
+    Implements a fallback mechanism to try multiple models if one fails.
     """
     context = load_data_context()
     
@@ -110,30 +111,40 @@ def get_gemini_recommendations(employees_df, total_budget, strategy):
     ]
     """
     
-    try:
-        # FIX: Switched to 'gemini-pro' for stability
-        model = genai.GenerativeModel('gemini-pro')
-        response = model.generate_content(prompt)
-        
-        # Clean up response to ensure valid JSON
-        text = response.text
-        # Remove markdown code blocks if present
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0]
-            
-        # Strip whitespace
-        clean_text = text.strip()
-        
-        data = json.loads(clean_text)
-        return pd.DataFrame(data)
-        
-    except Exception as e:
-        st.error(f"AI Agent Error: {e}")
-        # Return empty dataframe so app doesn't crash
-        return pd.DataFrame()
+    # List of models to try in order of preference
+    # 1.5 Flash is fastest/cheapest. 1.5 Pro is smarter. 1.0 Pro is legacy stable.
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']
+    
+    last_error = None
 
+    for model_name in models_to_try:
+        try:
+            # Try to initialize and call the model
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            
+            # Clean up response
+            text = response.text
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+            
+            clean_text = text.strip()
+            data = json.loads(clean_text)
+            
+            # If successful, return data and stop trying
+            return pd.DataFrame(data)
+            
+        except Exception as e:
+            # If this model fails, log error internally and continue to next model
+            last_error = e
+            continue
+
+    # If loop finishes and nothing worked:
+    st.error(f"AI Error: Could not connect to any Gemini models. Last error: {last_error}")
+    return pd.DataFrame()
+    
 # --- UI LAYOUT ---
 
 def main():
@@ -221,3 +232,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
