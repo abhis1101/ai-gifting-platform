@@ -5,7 +5,7 @@ import json
 from io import StringIO
 
 # --- CONFIGURATION & SETUP ---
-st.set_page_config(page_title="Saverpe AI - HR Gifting (Gemini Powered)", layout="wide")
+st.set_page_config(page_title="Saverpe AI - RAG Powered", layout="wide")
 
 # --- API CONFIGURATION ---
 # Securely load the key from Streamlit Secrets
@@ -14,11 +14,12 @@ try:
 except FileNotFoundError:
     st.error("Secrets not found. Please add GEMINI_API_KEY to your Streamlit Secrets.")
 
-# --- DATA CONTEXT (RAG LAYER) ---
-# These represent your specific business rules and psychological framework constraints.
+# --- RAG KNOWLEDGE BASE (CONTEXT) ---
+# We load the specific rules from your uploaded Excel files into the context.
 
-RULES_DATA = """
-Level,Budget_Type,Budget_Range,Complexity
+# Source:  (Types.csv - Defines Budget vs Complexity)
+CONTEXT_TYPES = """
+Employee Level,Budget Type,Budget Range,Complexity
 L1,Minimal,<500,Basic
 L2,Moderate,500-999,Medium
 L3,Substantial,1000-1999,Advanced
@@ -26,236 +27,220 @@ L4,Extensive,2000-2999,Custom
 L5,Extravagant,3000+,Custom
 """
 
-REWARD_CATALOG = """
-ID,Reward_Type,Reward_Name,Complexity,Savings_Potential
-1,Money,Bank Transfer,Basic,0%
-2,Money,Wallet Recharge,Basic,1%
-3,Gift_Cards,Multi-brand,Basic,3%
-4,Products,Brand Products,Basic,10%
-5,Experiences,Dining/Events,Medium,5%
-6,Paid_Time_Off,Extra Leave,Medium,0%
-7,Prepaid_Cards,Single Use,Basic,2%
+# Source:  (Rewarding & Gifting.csv - Defines Frequency/Ranking)
+CONTEXT_RANKING = """
+Type,Sub-Type,Ranking - General
+Festive Gifting,Diwali,1
+Milestone,Incentives,2
+General Festive,New Year,3
+Personal Milestones,Birthday,4
+Milestone,Team Incentives,5
+Personal Milestones,Marriage Anniversary,6
+Personal Milestones,Promotions,7
 """
 
-PSYCHOLOGY_CONTEXT = """
-1. The 7-Day Rule: Employees must receive recognition every 7 days to maintain engagement.
-2. Variable Ratio Schedule: Surprise bonuses work better than expected ones (prevents entitlement).
-3. Mental Accounting: Non-cash rewards (gifts/experiences) are valued higher than cash.
-4. Social Signaling: Experiential rewards create stories and social currency.
-5. Hedonic vs Utilitarian: Sales teams prefer Hedonic (luxury) rewards; Ops may prefer Utilitarian.
+# Source: [cite: 520] (AI-Recommendation.csv - Maps Rank to Rec IDs)
+# Simplified sample for the RAG context
+CONTEXT_REC_MAPPING = """
+Recommendation Rank,Recommendation ID,Reward 1,Reward 2
+1,1,Bank Transfer,
+2,20,Single Use Card,
+3,2,Wallet Recharge,
+4,3,Multi-brand GC,
+1a,25,Bank Transfer,Multi-brand GC
+1b,26,Bank Transfer,Brand Product
+2a,442,Single Use Card,Wallet Recharge
+"""
+
+# Source: [cite: 526] (Query1.csv - Definitions of Rec IDs)
+CONTEXT_QUERY1 = """
+ID,Reward Type 1,Reward 1,Reward Type 2,Reward 2,Complexity
+1,Money,Bank Tranfer,,,Basic
+3,Gift_Cards,Multi brand,,,Basic
+25,Money,Bank Tranfer,Gift_Cards,Multi brand,Medium
+26,Money,Bank Tranfer,Products,Brand,Medium
+507,Money,Bank Tranfer,Money,Bank Tranfer,Advanced
 """
 
 # --- HELPER FUNCTIONS ---
 
-def load_data_context():
-    return {
-        "rules": RULES_DATA,
-        "catalog": REWARD_CATALOG,
-        "psychology": PSYCHOLOGY_CONTEXT
-    }
-
 def mock_employee_db():
+    """Generates sample employee data if no file is uploaded."""
     data = {
         "ID": [101, 102, 103, 104, 105],
         "Name": ["Abhishek", "Sarah", "Raj", "Emily", "Michael"],
         "Department": ["Sales", "HR", "IT", "Operations", "Executive"],
         "Level": ["L5", "L3", "L4", "L2", "L1"],
+        "Role": ["Manager", "Generalist", "Developer", "Associate", "VP"],
         "Last_Reward_Date": ["2025-10-01", "2025-09-15", "2025-11-01", "2025-08-20", "2025-10-20"],
-        "Interests": ["Travel", "Reading", "Gaming", "Cooking", "Golf"]
     }
     return pd.DataFrame(data)
 
-# --- THE GEMINI AI AGENT (DYNAMIC DISCOVERY VERSION) ---
+# --- THE GEMINI AI AGENT ---
 
-def get_gemini_recommendations(employees_df, total_budget, strategy):
+def get_gemini_recommendations(employees_df, total_budget, level_overrides):
     """
-    Dynamically finds an available Gemini model and generates recommendations.
+    The RAG Engine. It sends the raw data + the context files to Gemini
+    to compute the optimal reward strategy.
     """
-    context = load_data_context()
+    
+    # Calculate dynamic budget per employee based on total budget if overrides aren't set
+    # (This is a simple heuristic to help the AI if manual amounts aren't given)
+    avg_budget = total_budget / len(employees_df)
+    
     employee_csv = employees_df.to_csv(index=False)
     
     prompt = f"""
-    You are an expert HR AI Agent for 'Saverpe'.
+    You are the 'Saverpe' Intelligent Reward Engine. 
     
-    ### CONTEXT:
-    1. Rules: {context['rules']}
-    2. Catalog: {context['catalog']}
-    3. Psychology: {context['psychology']}
+    ### 1. INPUTS:
+    - **Total Available Budget:** ₹{total_budget}
+    - **Manual Level Allocations:** {level_overrides} (If "0", calculate optimal amount based on Total Budget).
+    - **Employee Data:** {employee_csv}
+
+    ### 2. RAG KNOWLEDGE BASE (STRICT RULES):
     
-    ### INPUT:
-    - Budget: {total_budget}
-    - Strategy: {strategy}
-    - Employees:
-    {employee_csv}
+    **A. Budget & Complexity Mapping (Source: Types.csv):**
+    {CONTEXT_TYPES}
+    *Rule:* Use the "Budget Range" column to determine if an employee gets a Basic, Medium, or Advanced reward.
     
-    ### TASK:
-    Recommend rewards for each employee.
-    - 'High Impact': Prioritize Experiences/Surprise.
-    - 'Best Savings': Prioritize Brand Products (high savings).
-    - 'Least Complex': Prioritize Bank Transfer.
+    **B. Frequency & Timing (Source: Rewarding & Gifting.csv):**
+    {CONTEXT_RANKING}
+    *Rule:* Suggest the "Event" based on the highest priority (Rank 1 = Diwali).
     
-    ### OUTPUT FORMAT:
-    Return ONLY a valid JSON array. No markdown, no explanation text.
+    **C. Recommendation IDs (Source: AI-Recommendation.csv & Query1.csv):**
+    {CONTEXT_REC_MAPPING}
+    {CONTEXT_QUERY1}
+    *Rule:* You MUST select a valid "Recommendation ID" (e.g., 1, 25, 26) that matches the Complexity determined in Step A.
+    
+    ### 3. INSTRUCTIONS:
+    1. **Calculate Amount:** For each employee, decide the Reward Amount based on their Level (L1-L5). Use the Manual Allocations if provided; otherwise, distribute the Total Budget efficiently favoring higher levels (L5).
+    2. **Determine Complexity:** Compare the Amount to the "Budget Range" in Rule A to find the Complexity (Basic/Medium/Advanced).
+    3. **Select Combo:** Pick a "Recommendation ID" from Rule C that matches that Complexity.
+    4. **Determine Frequency:** Assign the "Event" based on Rule B (Ranking).
+    
+    ### 4. OUTPUT FORMAT:
+    Return ONLY a valid JSON array. No markdown.
     [
         {{
-            "Employee": "Name",
-            "Level": "Lx",
+            "Employee_Name": "Name",
+            "Level": "L1/L2...",
             "Department": "Dept",
-            "Recommended_Reward": "Reward Name",
-            "Timing": "Timing",
-            "Amount_INR": 0,
-            "Reasoning": "Short reason"
+            "Allocated_Amount": 0,
+            "Complexity": "Basic/Medium/Advanced",
+            "Event": "e.g. Diwali",
+            "Recommendation_ID": "e.g. 25",
+            "Reward_Combo": "e.g. Bank Transfer + Gift Card"
         }}
     ]
     """
     
+    # Dynamic Model Discovery (Self-Healing Connection)
+    available_models = []
     try:
-        # 1. DYNAMICALLY FIND AVAILABLE MODELS
-        # We ask Google what models are available for this API key
-        available_models = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
-        
-        if not available_models:
-            st.error("CRITICAL ERROR: No Generative AI models are available for this API Key. Please check your Google Cloud/AI Studio plan.")
-            return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
+        return pd.DataFrame()
 
-        # 2. SELECT THE BEST MODEL
-        # Preference: 1.5 Flash (Fast) -> 1.5 Pro (Smart) -> Any Gemini -> Any Available
-        selected_model_name = None
-        
-        # Search strategy
-        for m in available_models:
-            if 'gemini-1.5-flash' in m:
-                selected_model_name = m
-                break
-        
-        if not selected_model_name:
-            for m in available_models:
-                if 'gemini-1.5-pro' in m:
-                    selected_model_name = m
-                    break
-        
-        if not selected_model_name:
-            for m in available_models:
-                if 'gemini' in m:
-                    selected_model_name = m
-                    break
-                    
-        # Fallback to the first one found if nothing matched preferences
-        if not selected_model_name:
-            selected_model_name = available_models[0]
-
-        # 3. RUN GENERATION
-        # st.toast(f"Using AI Model: {selected_model_name}") # Uncomment for debugging
-        model = genai.GenerativeModel(selected_model_name)
+    # Select best model (Flash > Pro)
+    model_name = next((m for m in available_models if 'gemini-1.5-flash' in m), available_models[0])
+    
+    try:
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         
-        # 4. CLEAN OUTPUT
+        # Clean response
         text = response.text
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
             
-        clean_text = text.strip()
-        data = json.loads(clean_text)
+        data = json.loads(text.strip())
         return pd.DataFrame(data)
         
     except Exception as e:
         st.error(f"AI Processing Error: {e}")
-        # Print available models to helps debug if it fails again
-        # st.write("Debug - Available Models found:", available_models) 
         return pd.DataFrame()
 
 # --- UI LAYOUT ---
 
 def main():
-    st.title("Orbit AI: Gifting & Rewarding Engine (Powered by Gemini)")
+    st.title("Orbit AI: Automated Reward Orchestrator")
+    st.markdown("### RAG-Driven Gifting based on Budget & Complexity Mapping")
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        st.success(f"✅ Connected to Gemini API")
+        st.header("Inputs")
         
-        st.subheader("Budgeting")
-        total_budget = st.number_input("Total Budget (INR)", value=50000, step=5000)
-        frequency = st.selectbox("Gifting Frequency", ["Monthly", "Quarterly", "Ad-hoc (Surprise)"])
+        # Input 1: Total Budget
+        total_budget = st.number_input("Total Gifting Budget (₹)", value=50000, step=5000)
         
-        st.subheader("Data Source")
-        uploaded_file = st.file_uploader("Upload Employee DB (CSV)", type=['csv'])
-        
+        # Input 2: Advanced Level Overrides
+        st.markdown("---")
+        with st.expander("Advanced: Manual Level Amounts"):
+            st.caption("Leave as 0 to let AI calculate based on total budget.")
+            l1_amt = st.number_input("Level 1 Amount (₹)", value=0)
+            l2_amt = st.number_input("Level 2 Amount (₹)", value=0)
+            l3_amt = st.number_input("Level 3 Amount (₹)", value=0)
+            l4_amt = st.number_input("Level 4 Amount (₹)", value=0)
+            l5_amt = st.number_input("Level 5 Amount (₹)", value=0)
+            
+            level_overrides = {
+                "L1": l1_amt, "L2": l2_amt, "L3": l3_amt, "L4": l4_amt, "L5": l5_amt
+            }
+
+        # Input 3: Data
+        st.markdown("---")
+        uploaded_file = st.file_uploader("Employee DB (CSV)", type=['csv'])
         if uploaded_file:
             employees = pd.read_csv(uploaded_file)
         else:
             employees = mock_employee_db()
             st.info("Using Mock Data")
 
-    # Main Area
-    with st.expander("📊 Step 1: Review Employee Data", expanded=True):
-        st.dataframe(employees, use_container_width=True)
-
-    st.divider()
-    st.header("🤖 Step 2: Run AI Recommendation Strategy")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    strategy = None
-    if col1.button("🚀 High Impact (Psychological)", use_container_width=True):
-        strategy = "High Impact"
-    if col2.button("💰 Best Savings (Financial)", use_container_width=True):
-        strategy = "Best Savings"
-    if col3.button("⚡ Least Complex (Operational)", use_container_width=True):
-        strategy = "Least Complex"
-
-    if strategy:
-        with st.spinner(f"Consulting Gemini AI for '{strategy}' strategy..."):
-            rec_df = get_gemini_recommendations(employees, total_budget, strategy)
+    # Main Output Area
+    if st.button("✨ Run AI Allocation Model", type="primary", use_container_width=True):
+        
+        with st.spinner("Querying RAG Knowledge Base & Optimizing Budget..."):
+            # Run the AI Agent
+            result_df = get_gemini_recommendations(employees, total_budget, level_overrides)
             
-            if not rec_df.empty:
-                st.session_state['results'] = rec_df
-                st.session_state['strategy'] = strategy
+            if not result_df.empty:
+                # --- SUMMARY METRICS ---
+                col1, col2, col3, col4 = st.columns(4)
+                total_used = result_df['Allocated_Amount'].sum()
+                
+                col1.metric("Total Budget", f"₹{total_budget:,}")
+                col2.metric("Allocated", f"₹{total_used:,}", delta=f"{total_budget-total_used}")
+                col3.metric("Employees", len(result_df))
+                # Identify best impact strategy used
+                strategy_used = result_df['Event'].mode()[0] if not result_df.empty else "N/A"
+                col4.metric("Primary Event", strategy_used)
 
-    # Display Results
-    if 'results' in st.session_state:
-        rec_df = st.session_state['results']
-        st.subheader(f"📋 AI Recommendations: {st.session_state['strategy']}")
-        
-        # Metrics
-        m1, m2, m3 = st.columns(3)
-        total_spend = rec_df["Amount_INR"].sum()
-        # Simple logic to estimate savings based on strategy
-        savings_rate = 0.12 if st.session_state['strategy'] == "Best Savings" else 0.04
-        savings = total_spend * savings_rate
-        
-        m1.metric("Total Proposed Spend", f"₹{total_spend:,}")
-        m2.metric("Estimated Savings", f"₹{int(savings):,}", f"{savings_rate*100}%")
-        m3.metric("Employees Covered", len(rec_df))
-        
-        # Detailed Table
-        st.dataframe(
-            rec_df,
-            column_config={
-                "Amount_INR": st.column_config.NumberColumn("Amount (₹)", format="₹%d"),
-            },
-            use_container_width=True
-        )
-        
-        # Implementation
-        st.divider()
-        st.header("✅ Step 3: Execute")
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.warning("Clicking 'Approve' will generate payment orders via the connected Vendor API.")
-        with c2:
-            if st.button("Approve & Pay", type="primary", use_container_width=True):
-                st.balloons()
-                st.success("Orders processed successfully!")
+                # --- DETAILED TABLE ---
+                st.subheader("Generated Reward Plan")
+                st.dataframe(
+                    result_df,
+                    column_config={
+                        "Allocated_Amount": st.column_config.NumberColumn("Amount", format="₹%d"),
+                        "Recommendation_ID": st.column_config.TextColumn("Rec ID"),
+                    },
+                    use_container_width=True
+                )
+                
+                # --- ONE CLICK IMPLEMENTATION ---
+                st.markdown("---")
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    st.caption("This will trigger the payouts based on the 'Recommendation ID' logic defined in the backend.")
+                with c2:
+                    if st.button("🚀 One-Click Implementation"):
+                        st.balloons()
+                        st.success(f"Processed {len(result_df)} rewards for {strategy_used}!")
 
 if __name__ == "__main__":
-
     main()
-
-
-
