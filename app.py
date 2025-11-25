@@ -8,10 +8,11 @@ from io import StringIO
 st.set_page_config(page_title="Saverpe AI - HR Gifting (Gemini Powered)", layout="wide")
 
 # --- API CONFIGURATION ---
-# WARNING: It is generally not safe to hardcode API keys in production apps.
-# Ideally, use st.secrets or environment variables.
-GEMINI_API_KEY = "AIzaSyCnXfU9G_PiNY93TDoH-4RexbcBrhmH_pM"
-genai.configure(api_key=GEMINI_API_KEY)
+# Securely load the key from Streamlit Secrets
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+except FileNotFoundError:
+    st.error("Secrets not found. Please add GEMINI_API_KEY to your Streamlit Secrets.")
 
 # --- DATA CONTEXT (RAG LAYER) ---
 # These represent your specific business rules and psychological framework constraints.
@@ -255,5 +256,6 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
